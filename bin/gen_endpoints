@@ -1,0 +1,73 @@
+#!/usr/bin/env ruby
+# coding: utf-8
+# Copyright 2015 Chen Xianren. All rights reserved.
+
+require 'rexml/document'
+
+def const_name(s)
+	a = s.split('-')
+	a.map! { |i|
+		i[0].upcase + i[1..-1]
+	}
+	a[0].upcase!
+	'Region' + a.join('')
+end
+
+File.open('../data/openapi-meta/endpoints.xml') { |r|
+	d = REXML::Document.new r
+	File.open('../lib/openapi/endpoints.rb', 'w') { |w|
+		w.puts '#!/usr/bin/env ruby'
+		w.puts '# coding: utf-8'
+		w.puts '# Copyright 2015 Chen Xianren. All rights reserved.'
+		w.puts '# Code generated from endpoints.xml; DO NOT EDIT'
+		w.puts
+
+		w.puts 'module OpenAPI'
+
+		a = []
+		d.elements.each('Endpoints/Endpoint') { |e|
+			e.elements.each('RegionIds/RegionId') { |i|
+				i = i.text.strip
+				a.push sprintf("%s = '%s'\n", const_name(i), i)
+			}
+		}
+		w.puts a.sort.uniq.join('')
+		w.puts
+
+
+		w.puts 'Regions = {'
+		a = []
+		d.elements.each('Endpoints/Endpoint') { |e|
+			e.elements.each('RegionIds/RegionId') { |i|
+				a.push sprintf("\t%s => %s,\n",
+				const_name(i.text.strip), const_name(e.attributes['name'].strip))
+			}
+		}
+		w.puts a.sort.uniq.join('')
+		w.puts '}'
+		w.puts
+
+		w.puts 'Domains = {'
+		a = []
+		d.elements.each('Endpoints/Endpoint') { |e|
+			b = []
+			e.elements.each('Products/Product') { |i|
+				b.push sprintf("\t\t'%s' => '%s',\n",
+				i.elements['ProductName'].text.strip, i.elements['DomainName'].text.strip)
+			}
+			a.push sprintf("\t%s => {\n%s\t},\n",
+			const_name(e.attributes['name'].strip), b.sort.uniq.join(''))
+		}
+		w.puts a.sort.uniq.join('')
+		w.puts '}'
+
+		w.puts %q(
+def self.get_domain(product, region=nil)
+	region = RegionCNHangzhou if region.nil?
+	Domains.fetch(Regions[region], {})[product]
+end
+)
+
+		w.puts 'end'
+	}
+}

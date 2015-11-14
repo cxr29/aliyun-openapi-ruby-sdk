@@ -1,0 +1,217 @@
+#!/usr/bin/env ruby
+# coding: utf-8
+# Copyright 2015 Chen Xianren. All rights reserved.
+
+require 'json'
+require 'fileutils'
+
+def read_json(p)
+	f = File.open(p)
+	s = f.read
+	f.close
+	quote = false
+	data = ''
+	s.each_char { |c|
+		case c
+		when '"'
+			data += c
+			quote = !quote
+		when "\n"
+			# data += '\n' if quote
+			data += c unless quote
+		when "\t"
+			# data += '\t' if quote
+			data += c unless quote
+		else
+			data += c
+		end
+	}
+	JSON.parse(data)
+end
+
+def package_name(s)
+	data = ''
+	s.strip.downcase.each_char { |c|
+		data += c if ('a'..'z').include?(c) || ('0'..'9').include?(c)
+	}
+	data
+end
+
+def underline(s)
+	s.gsub(/_+/, '_').sub(/^_/, '').sub(/_$/, '')
+end
+
+def method_name(s)
+	data = ''
+	s.strip.each_char { |c|
+		data += '_' if ('A'..'Z').include?(c)
+		data += c.downcase
+	}
+	underline data
+end
+
+def variable_name(s)
+	underline method_name(s).gsub('.', '_')
+end
+
+def clean_values(s, sep=',')
+	a = s.strip.split(sep)
+	a.map! { |i|
+		i.strip
+		i.empty? ? nil : i
+	}
+	a.compact.sort.uniq.join('|')
+end
+
+def nil_or_empty?(s)
+	s.nil? || s.strip.empty?
+end
+
+def comment(p)
+	s = sprintf("#  name: %s, type: %s", variable_name(p['tagName']), p['type'])
+	s += ', min value: ' + clean_values(p['minValue']) unless nil_or_empty? p['minValue']
+	s += ', max value: ' + clean_values(p['maxValue']) unless nil_or_empty? p['maxValue']
+	s += ', optional values: ' + clean_values(p['value']) unless nil_or_empty? p['value']
+	s
+end
+
+def validation(p)
+	name = variable_name(p['tagName'].strip)
+	s = p['required'] == 'true' ? name : sprintf('optional[:%s]', name)
+	a = []
+
+	unless nil_or_empty? p['minValue']
+		a.push sprintf("raise ArgumentError, '%s must be equal or greater than %s' unless %s < %s",
+		name, p['minValue'], s, p['minValue'])
+	end
+
+	unless nil_or_empty? p['maxValue']
+		a.push sprintf("raise ArgumentError, '%s must be equal or less than %s' unless %s > %s",
+		name, p['maxValue'], s, p['maxValue'])
+	end
+
+	unless nil_or_empty? p['value']
+		values = clean_values(p['value'])
+		a.push sprintf("raise ArgumentError, '%s must be %s' unless '%s'.split('|').include? %s",
+		name, values, values, s)
+	end
+
+	a.push sprintf("args[:%s]['%s'] = %s", p['tagPosition'].strip.downcase, p['tagName'].strip, s)
+	return a.join("\n") if p['required'] == 'true'
+	a.map! { |i| "\t" + i }
+	sprintf("if optional.key? :%s\n%s\nend", name, a.join("\n"))
+end
+
+Dir.glob('../data/openapi-meta/api-metadata/aliyun-api-metadata-*/*/Version-Info.json') { |i|
+	vi = read_json(i)
+	pkg = package_name(vi['product'].strip)
+	dir = File.join('../lib/openapi/apis', pkg)
+	FileUtils.mkdir_p(dir)
+	open(File.join(dir, vi['name'].strip.delete!('-')+'.rb'), 'w') { |w|
+		w.puts '#!/usr/bin/env ruby'
+		w.puts '# coding: utf-8'
+		w.puts '# Copyright 2015 Chen Xianren. All rights reserved.'
+		w.puts '# Code generated from openapi-meta; DO NOT EDIT'
+		w.puts
+
+		w.puts sprintf('class OpenAPI::%s < OpenAPI::Service', pkg.capitalize)
+
+		w.puts sprintf("Product = '%s'\n", vi['product'].strip)
+		w.puts sprintf("Style = '%s'\n", vi['apiStyle'].strip)
+		w.puts sprintf("Version = '%s'\n", vi['name'].strip)
+
+		w.puts %q(
+def self.new_params
+	return {
+		:product => Product,
+		:style => Style,
+		:version => Version,
+		:path => {},
+		:query => {},
+		:body => {},
+		:header => {},
+	}
+end
+)
+
+		Dir.glob(File.join(File.dirname(i), 'Api', '*.json')) { |j|
+			api = read_json(j)
+
+			# required comment, required parameters, optional comment, method body
+			rc, rp, oc, mb = [], [], [], []
+
+			api['parameters']['parameters'].each { |p|
+				mb.push validation(p)
+				if p['required'] == 'true'
+					rc.push comment(p)
+					rp.push variable_name(p['tagName'])
+				else
+					oc.push comment(p)
+				end
+			}
+
+			rp.sort!.push 'optional={}'
+
+			v = clean_values(api['isvProtocol']['method'], '|').upcase
+			if v.include? '|'
+				oc.push sprintf("#  name: _method, type: String, optional values: %s", v)
+				mb.push sprintf(%q(
+if optional.key? :_method
+	raise ArgumentError, '_method must be %s' unless '%s'.split('|').include? optional[:_method]
+	args[:method] = optional[:_method]
+end
+).strip, v, v)
+			else
+				mb.push sprintf("args[:method] = '%s'\n", v)
+			end
+
+			v = clean_values(api['isvProtocol']['protocol'], '|').downcase
+			if v.include? '|'
+				oc.push sprintf("#  name: _scheme, type: String, optional values: %s", v)
+				mb.push sprintf(%q(
+if optional.key? :_scheme
+	raise ArgumentError, '_scheme must be %s' unless '%s'.split('|').include? optional[:_scheme]
+	args[:scheme] = optional[:_scheme]
+end
+).strip, v, v)
+			else
+				mb.push sprintf("args[:scheme] = '%s'", v)
+			end
+
+			oc.push "#  name: _region, type: String"
+			mb.push "args[:region] = optional[:_region] if (optional.key? :_region)"
+
+			action = api['name'].strip
+			pattern = api['isvProtocol']['pattern']
+			unless nil_or_empty? pattern
+				x = '?Action='
+				i = pattern.index x
+				if i
+					action = pattern[i+x.length..-1]
+					pattern = pattern[0...i]
+				end
+				mb.push sprintf("args[:pattern] = '%s'", pattern)
+			end
+
+			mb.unshift sprintf("args[:query]['Action'] = '%s'", action)
+			mb.sort!
+			mb.unshift 'args = self.class.new_params'
+			mb.push 'self.run(args)'
+
+			w.puts
+			unless rc.empty?
+				w.puts "# required parameters:"
+				rc.sort.each { |s| w.puts s }
+			end
+			unless oc.empty?
+				w.puts "# optional parameters:"
+				oc.sort.each { |s| w.puts s }
+			end
+			w.puts sprintf("def %s(%s)", method_name(api['name']), rp.join(', '))
+			mb.join("\n").each_line("\n") { |s| w.puts "\t" + s unless s == "\n" }
+			w.puts "end"
+		}
+
+		w.puts 'end'
+	}
+}

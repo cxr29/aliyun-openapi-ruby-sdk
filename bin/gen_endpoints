@@ -34,7 +34,6 @@ File.open('../data/openapi-meta/endpoints.xml') { |r|
 		w.puts a.sort.uniq.join('')
 		w.puts
 
-
 		w.puts 'Regions = {'
 		a = []
 		d.elements.each('Endpoints/Endpoint') { |e|

@@ -11,7 +11,7 @@ Aliyun OpenAPI Ruby SDK
 
 ### Install
 ```
-$ git clone https://git.oschina.net/cxr29/aliyun-openapi-ruby-sdk.git
+$ git clone https://github.com/cxr29/aliyun-openapi-ruby-sdk
 $ cd aliyun-openapi-ruby-sdk
 $ gem build openapi.gemspec
 $ gem install openapi-1.0.0.beta.gem
